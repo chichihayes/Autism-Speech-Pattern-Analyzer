@@ -32,6 +32,7 @@
       <h1>Hear the <span class="grad">rhythm</span> behind speech.</h1>
       <p class="lead">Upload a recording to measure response time, speech rate, word duration and repetition, with an AI-written explanation of what the numbers show.</p>
 
+      <div id="chooser">
       <label id="dropzone" class="dropzone" tabindex="0">
         <input id="file" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" hidden>
         <div class="dz-icon" aria-hidden="true">
@@ -40,6 +41,22 @@
         <div class="dz-title">Drop an audio file here, or <u>browse</u></div>
         <div class="dz-sub">WAV, MP3, M4A, FLAC or OGG &middot; the first 2 minutes are analyzed &middot; 5-10 seconds of clear speech minimum</div>
       </label>
+
+      <div id="or" class="or"><span>or</span></div>
+
+      <button id="record" class="btn record-btn" type="button">
+        <span class="rec-dot" aria-hidden="true"></span>Record a voice note
+      </button>
+
+      <div id="recorder" class="recorder" hidden>
+        <div class="rec-top"><span class="rec-live"><i></i>Recording</span><span id="rec-time" class="rec-time">0:00</span></div>
+        <canvas id="rec-meter" class="rec-meter" width="640" height="64"></canvas>
+        <div class="rec-actions">
+          <button id="rec-cancel" class="btn ghost" type="button">Cancel</button>
+          <button id="rec-stop" class="btn primary" type="button">Stop and review</button>
+        </div>
+      </div>
+      </div>
 
       <div id="picked" class="picked" hidden>
         <div class="picked-info">

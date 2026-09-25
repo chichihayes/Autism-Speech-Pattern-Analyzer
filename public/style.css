@@ -224,3 +224,25 @@ audio { color-scheme: dark; height: 40px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition: none !important; }
 }
+
+/* Recording */
+.or { display: flex; align-items: center; gap: 14px; max-width: 680px; margin: 20px auto; color: var(--muted); font-size: 13px; }
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.record-btn {
+  display: inline-flex; align-items: center; gap: 10px; color: var(--text);
+  background: var(--card); border-color: var(--line-2);
+}
+.record-btn:hover { border-color: var(--red); background: #150808; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 10px var(--red); }
+.recorder {
+  max-width: 680px; margin: 0 auto; padding: 20px; text-align: left;
+  border: 1px solid rgba(248,113,113,.4); border-radius: 20px; background: #0d0606;
+}
+.rec-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.rec-live { display: flex; align-items: center; gap: 8px; color: var(--red); font-weight: 600; font-size: 14px; }
+.rec-live i { width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; transform: scale(.8); } }
+.rec-time { font-family: var(--mono); font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.rec-meter { width: 100%; height: 64px; display: block; margin-bottom: 16px; }
+.rec-actions { display: flex; justify-content: flex-end; gap: 10px; }
+@media (max-width: 420px) { .rec-actions { flex-direction: column-reverse; } .record-btn { width: 100%; justify-content: center; } }

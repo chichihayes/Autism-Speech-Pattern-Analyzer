@@ -384,7 +384,7 @@ function pickFile(file) {
   $('#preview').src = previewUrl;
   $('#picked-name').textContent = file.name;
   $('#picked-meta').textContent = `${fmtBytes(file.size)} · ${file.type || 'audio'}`;
-  $('#dropzone').hidden = true;
+  $('#chooser').hidden = true;
   $('#picked').hidden = false;
 }
 
@@ -395,7 +395,7 @@ function clearFile() {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
   $('#picked').hidden = true;
-  $('#dropzone').hidden = false;
+  $('#chooser').hidden = false;
   showError('');
 }
 
@@ -457,6 +457,105 @@ async function run() {
     showError(err.message || 'Something went wrong. Please try again.');
   }
 }
+
+/* ---------- voice recording ---------- */
+
+const rec = { recorder: null, stream: null, ctx: null, chunks: [], timer: null, raf: null, started: 0, cancelled: false };
+
+const fmtClock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+function drawMeter(analyser) {
+  const canvas = $('#rec-meter');
+  const g = canvas.getContext('2d');
+  const data = new Uint8Array(analyser.fftSize);
+  const bars = 64;
+  const levels = new Array(bars).fill(0);
+  let frame = 0;
+
+  const paint = () => {
+    analyser.getByteTimeDomainData(data);
+    let peak = 0;
+    for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128);
+    if (frame++ % 3 === 0) { levels.push(peak); levels.shift(); }
+
+    g.clearRect(0, 0, canvas.width, canvas.height);
+    const w = canvas.width / bars;
+    levels.forEach((lv, i) => {
+      const h = Math.max(4, Math.min(1, lv * 2.2) * canvas.height);
+      g.fillStyle = i === bars - 1 ? '#fff' : '#67e8f9';
+      g.fillRect(i * w + 1, (canvas.height - h) / 2, w - 3, h);
+    });
+    rec.raf = requestAnimationFrame(paint);
+  };
+  paint();
+}
+
+function cleanupRecording() {
+  clearInterval(rec.timer);
+  cancelAnimationFrame(rec.raf);
+  rec.stream?.getTracks().forEach((t) => t.stop());
+  rec.ctx?.close();
+  Object.assign(rec, { recorder: null, stream: null, ctx: null, chunks: [], timer: null, raf: null });
+  $('#recorder').hidden = true;
+  $('#record').hidden = false;
+  $('#or').hidden = false;
+  dz.hidden = false;
+}
+
+async function startRecording() {
+  showError('');
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    return showError('Recording is not supported in this browser. Please upload a file instead.');
+  }
+  try {
+    rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    return showError('Microphone access was blocked. Allow the microphone in your browser and try again.');
+  }
+
+  rec.cancelled = false;
+  rec.chunks = [];
+  rec.recorder = new MediaRecorder(rec.stream);
+  rec.recorder.ondataavailable = (e) => e.data.size && rec.chunks.push(e.data);
+  rec.recorder.onstop = () => {
+    const type = rec.recorder.mimeType || 'audio/webm';
+    const chunks = rec.chunks;
+    const cancelled = rec.cancelled;
+    cleanupRecording();
+    if (cancelled || !chunks.length) return;
+    const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    pickFile(new File(chunks, `voice-note-${stamp}.${ext}`, { type }));
+  };
+
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  rec.ctx = new AudioCtx();
+  const analyser = rec.ctx.createAnalyser();
+  analyser.fftSize = 512;
+  rec.ctx.createMediaStreamSource(rec.stream).connect(analyser);
+
+  dz.hidden = true;
+  $('#record').hidden = true;
+  $('#or').hidden = true;
+  $('#recorder').hidden = false;
+  $('#rec-time').textContent = '0:00';
+
+  rec.recorder.start(250);
+  rec.started = Date.now();
+  drawMeter(analyser);
+  rec.timer = setInterval(() => {
+    const secs = (Date.now() - rec.started) / 1000;
+    $('#rec-time').textContent = fmtClock(secs);
+    if (secs >= CFG.maxSeconds) rec.recorder.stop(); // the analysis only uses the first 2 minutes
+  }, 250);
+}
+
+$('#record').addEventListener('click', startRecording);
+$('#rec-stop').addEventListener('click', () => rec.recorder?.state === 'recording' && rec.recorder.stop());
+$('#rec-cancel').addEventListener('click', () => {
+  rec.cancelled = true;
+  rec.recorder?.state === 'recording' ? rec.recorder.stop() : cleanupRecording();
+});
 
 /* ---------- events ---------- */
 
