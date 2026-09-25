@@ -1,6 +1,13 @@
 // Builds the interpretation prompt from measured metrics and asks OpenRouter for an explanation.
 
-const DEFAULT_MODEL = 'deepseek/deepseek-r1-0528:free';
+// Free models are frequently rate-limited upstream, so try several in order.
+const FALLBACK_MODELS = [
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'google/gemma-4-31b-it:free',
+  'z-ai/glm-5.2:free',
+  'qwen/qwen3.8-27b:free',
+  'google/gemma-4-26b-a4b-it:free',
+];
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const str = (v, max) => String(v ?? '').slice(0, max);
@@ -49,32 +56,41 @@ Please provide:
 Be analytical and educational, not diagnostic. Focus on explaining what the data shows.
 Format the answer in Markdown with short headings and bullet points.`;
 
-  try {
-    const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'X-Title': 'Speech Pattern Analyzer',
-      },
-      body: JSON.stringify({
-        model: process.env.OPENROUTER_MODEL || DEFAULT_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+  const models = [process.env.OPENROUTER_MODEL, ...FALLBACK_MODELS].filter(Boolean);
 
-    if (!upstream.ok) {
-      console.error('OpenRouter error', upstream.status, await upstream.text());
-      return res.status(502).json({ error: `AI analysis failed (${upstream.status}).` });
+  const deadline = Date.now() + 85000;
+
+  const attempts = [];
+  for (let round = 0; round < 3; round++) attempts.push(...models);
+
+  for (const [i, model] of attempts.entries()) {
+    if (deadline - Date.now() < 5000) break;
+    if (i > 0 && i % models.length === 0) await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'X-Title': 'Speech Pattern Analyzer',
+        },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
+        signal: AbortSignal.timeout(Math.min(45000, deadline - Date.now())),
+      });
+
+      if (!upstream.ok) {
+        console.error('OpenRouter error', model, upstream.status, await upstream.text());
+        continue;
+      }
+
+      const data = await upstream.json();
+      let text = data?.choices?.[0]?.message?.content || '';
+      text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      if (text) return res.status(200).json({ analysis: text });
+    } catch (err) {
+      console.error('OpenRouter request failed', model, err.message);
     }
-
-    const data = await upstream.json();
-    let text = data?.choices?.[0]?.message?.content || '';
-    text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-    if (!text) return res.status(502).json({ error: 'The AI returned an empty response.' });
-    return res.status(200).json({ analysis: text });
-  } catch (err) {
-    console.error(err);
-    return res.status(502).json({ error: 'Could not reach the AI service.' });
   }
+
+  return res.status(502).json({ error: 'The AI models are busy right now. Please try again in a minute.' });
 }

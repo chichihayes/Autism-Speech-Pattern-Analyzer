@@ -31,7 +31,7 @@ The browser decodes the file, trims it to the first 120 seconds, and resamples i
    | --- | --- |
    | `GROQ_API_KEY` | https://console.groq.com/keys |
    | `OPENROUTER_API_KEY` | https://openrouter.ai/keys |
-   | `OPENROUTER_MODEL` (optional) | Defaults to `deepseek/deepseek-r1-0528:free` |
+   | `OPENROUTER_MODEL` (optional) | Tried first if set; otherwise a built-in list of free models is tried in order |
 
 ## Run locally
 
