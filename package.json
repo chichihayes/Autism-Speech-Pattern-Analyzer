@@ -1,0 +1,13 @@
+{
+  "name": "autism-speech-pattern-analyzer",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Speech timing and fluency analysis with Groq Whisper and OpenRouter.",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

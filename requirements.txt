@@ -1,6 +1,0 @@
-streamlit
-groq
-librosa
-soundfile
-numpy
-requests
