@@ -282,17 +282,39 @@ function renderWordTable(words) {
 
 // Minimal, HTML-safe Markdown: headings, bullet/numbered lists, bold and paragraphs.
 function renderMarkdown(src) {
-  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  const inline = (s) =>
+    esc(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
   const out = [];
   let list = null;
+  let table = null;
   const close = () => {
     if (list) out.push(`</${list}>`);
     list = null;
+  };
+  const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const flushTable = () => {
+    if (!table) return;
+    const [head, ...rows] = table;
+    out.push(
+      '<div class="tbl"><table><thead><tr>' + cells(head).map((c) => `<th>${inline(c)}</th>`).join('') + '</tr></thead><tbody>' +
+      rows.map((r) => '<tr>' + cells(r).map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>').join('') +
+      '</tbody></table></div>'
+    );
+    table = null;
   };
 
   for (const raw of src.split('\n')) {
     const line = raw.trimEnd();
     let m;
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      close();
+      if (!/^\s*\|?[\s:|-]+\|?\s*$/.test(line) || !line.includes('-')) (table ||= []).push(line);
+      continue;
+    }
+    flushTable();
     if (!line.trim()) {
       close();
     } else if ((m = line.match(/^\s*#{1,6}\s+(.*)/))) {
@@ -312,6 +334,7 @@ function renderMarkdown(src) {
     }
   }
   close();
+  flushTable();
   return out.join('');
 }
 
