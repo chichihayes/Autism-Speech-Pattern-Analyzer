@@ -1,7 +1,8 @@
 // Builds the interpretation prompt from measured metrics and asks OpenRouter for an explanation.
 
-// Free models are frequently rate-limited upstream, so try several in order.
+// Paid model first (fast and reliable); free models are frequently rate-limited, so they only serve as backups.
 const FALLBACK_MODELS = [
+  'anthropic/claude-haiku-4.5',
   'nvidia/nemotron-3-super-120b-a12b:free',
   'google/gemma-4-31b-it:free',
   'z-ai/glm-5.2:free',
