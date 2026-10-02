@@ -145,14 +145,49 @@ function sampleLiveFrame(video, startedAt) {
     }
   } catch { /* face model hiccup on this frame - leave as "no face" */ }
 
-  let leftY = null, rightY = null;
+  let leftY = null, rightY = null, leftX = null, rightX = null;
   try {
     const poseResult = poseLandmarker.detectForVideo(video, tsMs);
     const lm = poseResult?.landmarks?.[0];
-    if (lm) { leftY = lm[15].y; rightY = lm[16].y; }
+    if (lm) { leftX = lm[15].x; leftY = lm[15].y; rightX = lm[16].x; rightY = lm[16].y; }
   } catch { /* pose model hiccup on this frame */ }
 
-  return { t, gazeAway, leftY, rightY };
+  return { t, gazeAway, leftY, rightY, leftX, rightX };
+}
+
+// Draws the live detection feedback: a dot at each tracked wrist (lit up when a repetitive-
+// movement window is currently active) and updates the gaze badge above the preview.
+function drawLiveOverlay(video, canvas, sample, stimActive) {
+  if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const dot = (x, y) => {
+    if (x === null || y === null) return;
+    ctx.beginPath();
+    ctx.arc(x * canvas.width, y * canvas.height, stimActive ? 10 : 6, 0, Math.PI * 2);
+    ctx.fillStyle = stimActive ? '#f87171' : '#a78bfa';
+    ctx.shadowColor = stimActive ? '#f87171' : '#a78bfa';
+    ctx.shadowBlur = stimActive ? 16 : 6;
+    ctx.fill();
+  };
+  dot(sample.leftX, sample.leftY);
+  dot(sample.rightX, sample.rightY);
+
+  const badge = $('#v-gaze-badge');
+  if (sample.gazeAway === null) {
+    badge.textContent = 'Gaze: no face';
+    badge.className = 'gaze-badge';
+  } else if (sample.gazeAway) {
+    badge.textContent = 'Gaze: away';
+    badge.className = 'gaze-badge away';
+  } else {
+    badge.textContent = 'Gaze: on camera';
+    badge.className = 'gaze-badge on';
+  }
 }
 
 /* ---------- metrics ---------- */
@@ -214,24 +249,37 @@ function countReversals(values) {
   return reversals;
 }
 
+const stimWindowSamples = () => Math.max(3, Math.round(CFG.stimWindowSec / CFG.sampleStepSec));
+
+function isActiveWindow(slice) {
+  const left = slice.map((x) => x.leftY).filter((v) => v !== null);
+  const right = slice.map((x) => x.rightY).filter((v) => v !== null);
+  const span = slice.length ? slice[slice.length - 1].t - slice[0].t : 0;
+  if (span < CFG.stimWindowSec * 0.6) return false;
+  const reversals = countReversals(left) + countReversals(right);
+  const rate = span > 0 ? reversals / span : 0;
+  return rate >= CFG.stimReversalsPerSec;
+}
+
 function computeStimMetrics(samples, duration) {
-  const windowSamples = Math.max(3, Math.round(CFG.stimWindowSec / CFG.sampleStepSec));
-  const flags = samples.map((s, i) => {
-    const slice = samples.slice(Math.max(0, i - windowSamples), i + 1);
-    const left = slice.map((x) => x.leftY).filter((v) => v !== null);
-    const right = slice.map((x) => x.rightY).filter((v) => v !== null);
-    const span = slice.length ? slice[slice.length - 1].t - slice[0].t : 0;
-    if (span < CFG.stimWindowSec * 0.6) return { t: s.t, active: false };
-    const reversals = countReversals(left) + countReversals(right);
-    const rate = span > 0 ? reversals / span : 0;
-    return { t: s.t, active: rate >= CFG.stimReversalsPerSec };
-  });
+  const windowSamples = stimWindowSamples();
+  const flags = samples.map((s, i) => ({
+    t: s.t,
+    active: isActiveWindow(samples.slice(Math.max(0, i - windowSamples), i + 1)),
+  }));
 
   const episodes = mergeSegments(flags, CFG.minStimEpisodeSec);
   const totalStimSec = episodes.reduce((sum, [a, b]) => sum + (b - a), 0);
   const avgEpisodeSec = episodes.length ? totalStimSec / episodes.length : 0;
 
   return { episodes, episodeCount: episodes.length, totalStimSec, avgEpisodeSec, duration };
+}
+
+// Cheap live check used only for the on-screen overlay while recording - same rule as
+// computeStimMetrics, just applied to the tail of the samples collected so far.
+function isStimActiveNow(samples) {
+  const windowSamples = stimWindowSamples();
+  return isActiveWindow(samples.slice(-windowSamples - 1));
 }
 
 /* ---------- API ---------- */
@@ -412,6 +460,11 @@ function resetLive() {
   Object.assign(live, {
     recorder: null, chunks: [], samples: [], startedAt: 0, timer: null, sampleLoopId: null, hitCap: false, cancelled: false,
   });
+  const overlay = $('#v-overlay');
+  overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
+  const badge = $('#v-gaze-badge');
+  badge.textContent = 'Gaze: --';
+  badge.className = 'gaze-badge';
 }
 
 async function startLive() {
@@ -431,6 +484,7 @@ async function startLive() {
   }
 
   const preview = $('#v-live-preview');
+  const overlay = $('#v-overlay');
   preview.srcObject = live.stream;
 
   try {
@@ -461,7 +515,9 @@ async function startLive() {
   }, 250);
 
   const loop = () => {
-    live.samples.push(sampleLiveFrame(preview, live.startedAt));
+    const sample = sampleLiveFrame(preview, live.startedAt);
+    live.samples.push(sample);
+    drawLiveOverlay(preview, overlay, sample, isStimActiveNow(live.samples));
     live.sampleLoopId = setTimeout(loop, CFG.sampleStepSec * 1000);
   };
   loop();

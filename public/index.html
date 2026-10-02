@@ -172,8 +172,15 @@
       <!-- Live capture -->
       <section id="v-view-live" class="hero" hidden>
         <div class="recorder" style="max-width:720px">
-          <div class="rec-top"><span class="rec-live"><i></i>Live</span><span id="v-rec-time" class="rec-time">0:00</span></div>
-          <video id="v-live-preview" autoplay muted playsinline style="width:100%;border-radius:12px;background:#000;transform:scaleX(-1)"></video>
+          <div class="rec-top">
+            <span class="rec-live"><i></i>Live</span>
+            <span id="v-gaze-badge" class="gaze-badge">Gaze: --</span>
+            <span id="v-rec-time" class="rec-time">0:00</span>
+          </div>
+          <div style="position:relative;border-radius:12px;overflow:hidden">
+            <video id="v-live-preview" autoplay muted playsinline style="display:block;width:100%;background:#000;transform:scaleX(-1)"></video>
+            <canvas id="v-overlay" style="position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none"></canvas>
+          </div>
           <div class="rec-actions">
             <button id="v-rec-cancel" class="btn ghost" type="button">Cancel</button>
             <button id="v-rec-stop" class="btn primary" type="button">Stop and analyze</button>
