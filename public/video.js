@@ -1,19 +1,35 @@
 // Video Behavior Check: browser client.
-// A live camera session is sampled in real time with on-device MediaPipe models (gaze
-// direction from face blendshapes, wrist position from pose landmarks). Nothing is uploaded —
-// only the resulting numeric report is sent to /api/analyze-video for an AI-written interpretation.
+// A live camera session is sampled in real time with on-device MediaPipe models: gaze
+// direction from face blendshapes, and hand shape/position from hand landmarks (which gives
+// both arm-level movement like flapping/rocking, and hand-shape movement like squeezing).
+// Nothing is uploaded - only the resulting numbers are sent to /api/analyze-video.
 
-import { FilesetResolver, FaceLandmarker, PoseLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
+import { FilesetResolver, FaceLandmarker, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
 
 const CFG = {
   maxSeconds: 60,
-  sampleStepSec: 0.15, // ~6.7 samples/sec: enough to catch a flapping/rocking rhythm
+  sampleStepSec: 0.15, // ~6.7 samples/sec: enough to catch a flapping/rocking/squeezing rhythm
   gazeAwayThreshold: 0.35, // blendshape score above which gaze counts as "away" rather than centered
   minGazeAwaySegment: 0.6, // seconds - ignore blinks/glances shorter than this
-  stimWindowSec: 1.5, // sliding window used to detect oscillation
-  stimReversalsPerSec: 2.2, // direction reversals/sec within a window to call it "repetitive movement"
-  minStimEpisodeSec: 1.0,
+  movementWindowSec: 1.5, // sliding window for arm/hand position oscillation (flapping, rocking)
+  movementReversalsPerSec: 2.2,
+  minMovementEpisodeSec: 1.0,
+  squeezeWindowSec: 1.2, // sliding window for hand-openness oscillation (squeezing)
+  squeezeReversalsPerSec: 1.8,
+  minSqueezeEpisodeSec: 0.8,
 };
+
+// Standard 21-point MediaPipe hand topology: wrist (0), thumb (1-4), index (5-8),
+// middle (9-12), ring (13-16), pinky (17-20).
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+const FINGERTIPS = [4, 8, 12, 16, 20];
 
 const $ = (sel) => document.querySelector(sel);
 const views = {
@@ -25,7 +41,7 @@ const views = {
 };
 
 let faceLandmarker = null;
-let poseLandmarker = null;
+let handLandmarker = null;
 let playerUrl = null;
 
 // Live-session state
@@ -39,6 +55,12 @@ const live = {
   sampleLoopId: null,
   hitCap: false,
   cancelled: false,
+  gazeAwayCount: 0,
+  movementCount: 0,
+  squeezeCount: 0,
+  prevGazeAway: null,
+  prevMovementActive: false,
+  prevSqueezeActive: false,
 };
 
 /* ---------- helpers ---------- */
@@ -72,11 +94,9 @@ function setStep(name) {
 
 let modelsPromise = null;
 
-// Downloads the WASM runtime + two models (a few MB total). Kicked off eagerly as soon as
-// this script runs - see the bottom of the file - so by the time someone actually clicks
-// "Start live check" it's usually already loaded or close to it, instead of making them
-// wait for the download after they've committed to starting. Cached by the browser after
-// the first visit, so this is only slow the very first time.
+// Downloads the WASM runtime + two models. Kicked off eagerly as soon as this script runs
+// (see the bottom of the file), so by the time someone clicks "Start live check" it's
+// usually already loaded. Cached by the browser after the first visit.
 function loadModels() {
   if (modelsPromise) return modelsPromise;
 
@@ -96,14 +116,14 @@ function loadModels() {
       numFaces: 1,
     });
 
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
       baseOptions: {
         modelAssetPath:
-          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
         delegate: 'GPU',
       },
       runningMode: 'VIDEO',
-      numPoses: 1,
+      numHands: 1,
     });
   })();
 
@@ -119,9 +139,13 @@ function blendshapeScore(categories, name) {
   return categories?.find((c) => c.categoryName === name)?.score || 0;
 }
 
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 // Pulls one sample from the live preview video at this instant. Runs on an interval while
-// the live session is active - `video.currentTime` and `performance.now()` are both strictly
-// increasing on a live stream, which is what detectForVideo requires.
+// the live session is active - `performance.now()` is strictly increasing, which is what
+// detectForVideo requires.
 function sampleLiveFrame(video, startedAt) {
   const t = (performance.now() - startedAt) / 1000;
   const tsMs = Math.round(performance.now());
@@ -145,19 +169,26 @@ function sampleLiveFrame(video, startedAt) {
     }
   } catch { /* face model hiccup on this frame - leave as "no face" */ }
 
-  let leftY = null, rightY = null, leftX = null, rightX = null;
+  let wristX = null, wristY = null, openness = null, handLm = null;
   try {
-    const poseResult = poseLandmarker.detectForVideo(video, tsMs);
-    const lm = poseResult?.landmarks?.[0];
-    if (lm) { leftX = lm[15].x; leftY = lm[15].y; rightX = lm[16].x; rightY = lm[16].y; }
-  } catch { /* pose model hiccup on this frame */ }
+    const handResult = handLandmarker.detectForVideo(video, tsMs);
+    const lm = handResult?.landmarks?.[0];
+    if (lm) {
+      handLm = lm;
+      wristX = lm[0].x;
+      wristY = lm[0].y;
+      const scale = dist(lm[0], lm[9]) || 0.0001; // wrist-to-middle-knuckle: a stable per-hand size reference
+      openness = FINGERTIPS.reduce((sum, i) => sum + dist(lm[0], lm[i]), 0) / FINGERTIPS.length / scale;
+    }
+  } catch { /* hand model hiccup on this frame */ }
 
-  return { t, gazeAway, leftY, rightY, leftX, rightX };
+  return { t, gazeAway, wristX, wristY, openness, handLm };
 }
 
-// Draws the live detection feedback: a dot at each tracked wrist (lit up when a repetitive-
-// movement window is currently active) and updates the gaze badge above the preview.
-function drawLiveOverlay(video, canvas, sample, stimActive) {
+// Draws the live detection feedback: the full hand skeleton (green, like a landmark-tracking
+// overlay), the wrist point enlarging/reddening when arm-level movement is active, the whole
+// hand flashing red when a squeezing (open/close) rhythm is active, and the gaze badge.
+function drawLiveOverlay(video, canvas, sample, movementActive, squeezeActive) {
   if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
@@ -165,17 +196,34 @@ function drawLiveOverlay(video, canvas, sample, stimActive) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const dot = (x, y) => {
-    if (x === null || y === null) return;
-    ctx.beginPath();
-    ctx.arc(x * canvas.width, y * canvas.height, stimActive ? 10 : 6, 0, Math.PI * 2);
-    ctx.fillStyle = stimActive ? '#f87171' : '#a78bfa';
-    ctx.shadowColor = stimActive ? '#f87171' : '#a78bfa';
-    ctx.shadowBlur = stimActive ? 16 : 6;
-    ctx.fill();
-  };
-  dot(sample.leftX, sample.leftY);
-  dot(sample.rightX, sample.rightY);
+  if (sample.handLm) {
+    const lm = sample.handLm;
+    const px = (p) => [p.x * canvas.width, p.y * canvas.height];
+    const lineColor = squeezeActive ? '#f87171' : '#4ade80';
+
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    HAND_CONNECTIONS.forEach(([a, b]) => {
+      const [x1, y1] = px(lm[a]);
+      const [x2, y2] = px(lm[b]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    });
+
+    lm.forEach((p, i) => {
+      const [x, y] = px(p);
+      const isWrist = i === 0;
+      const highlightWrist = isWrist && movementActive;
+      ctx.beginPath();
+      ctx.arc(x, y, highlightWrist ? 9 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = highlightWrist ? '#f87171' : lineColor;
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur = highlightWrist ? 14 : 4;
+      ctx.fill();
+    });
+  }
 
   const badge = $('#v-gaze-badge');
   if (sample.gazeAway === null) {
@@ -188,6 +236,11 @@ function drawLiveOverlay(video, canvas, sample, stimActive) {
     badge.textContent = 'Gaze: on camera';
     badge.className = 'gaze-badge on';
   }
+}
+
+function updateLiveCounters() {
+  $('#v-live-counts').textContent =
+    `Gaze deviations: ${live.gazeAwayCount}   Movement: ${live.movementCount}   Squeeze: ${live.squeezeCount}`;
 }
 
 /* ---------- metrics ---------- */
@@ -249,37 +302,40 @@ function countReversals(values) {
   return reversals;
 }
 
-const stimWindowSamples = () => Math.max(3, Math.round(CFG.stimWindowSec / CFG.sampleStepSec));
-
-function isActiveWindow(slice) {
-  const left = slice.map((x) => x.leftY).filter((v) => v !== null);
-  const right = slice.map((x) => x.rightY).filter((v) => v !== null);
+// Generic oscillation check: are the given value(s) reversing direction fast enough, over
+// this slice of samples, to call it repetitive motion? Used for both arm/hand position
+// (flapping, rocking) and hand openness (squeezing) - just with different keys/thresholds.
+function isActiveWindow(slice, valueKeys, windowSec, reversalsPerSec) {
   const span = slice.length ? slice[slice.length - 1].t - slice[0].t : 0;
-  if (span < CFG.stimWindowSec * 0.6) return false;
-  const reversals = countReversals(left) + countReversals(right);
+  if (span < windowSec * 0.6) return false;
+  let reversals = 0;
+  for (const key of valueKeys) {
+    reversals += countReversals(slice.map((s) => s[key]).filter((v) => v !== null));
+  }
   const rate = span > 0 ? reversals / span : 0;
-  return rate >= CFG.stimReversalsPerSec;
+  return rate >= reversalsPerSec;
 }
 
-function computeStimMetrics(samples, duration) {
-  const windowSamples = stimWindowSamples();
+const windowSizeFor = (windowSec) => Math.max(3, Math.round(windowSec / CFG.sampleStepSec));
+
+function computeEpisodes(samples, valueKeys, windowSec, reversalsPerSec, minEpisodeSec) {
+  const windowSamples = windowSizeFor(windowSec);
   const flags = samples.map((s, i) => ({
     t: s.t,
-    active: isActiveWindow(samples.slice(Math.max(0, i - windowSamples), i + 1)),
+    active: isActiveWindow(samples.slice(Math.max(0, i - windowSamples), i + 1), valueKeys, windowSec, reversalsPerSec),
   }));
 
-  const episodes = mergeSegments(flags, CFG.minStimEpisodeSec);
-  const totalStimSec = episodes.reduce((sum, [a, b]) => sum + (b - a), 0);
-  const avgEpisodeSec = episodes.length ? totalStimSec / episodes.length : 0;
+  const episodes = mergeSegments(flags, minEpisodeSec);
+  const totalSec = episodes.reduce((sum, [a, b]) => sum + (b - a), 0);
+  const avgSec = episodes.length ? totalSec / episodes.length : 0;
 
-  return { episodes, episodeCount: episodes.length, totalStimSec, avgEpisodeSec, duration };
+  return { episodes, episodeCount: episodes.length, totalSec, avgSec };
 }
 
-// Cheap live check used only for the on-screen overlay while recording - same rule as
-// computeStimMetrics, just applied to the tail of the samples collected so far.
-function isStimActiveNow(samples) {
-  const windowSamples = stimWindowSamples();
-  return isActiveWindow(samples.slice(-windowSamples - 1));
+// Cheap live check used only for the on-screen overlay/counters while recording.
+function isActiveNow(samples, valueKeys, windowSec, reversalsPerSec) {
+  const windowSamples = windowSizeFor(windowSec);
+  return isActiveWindow(samples.slice(-windowSamples - 1), valueKeys, windowSec, reversalsPerSec);
 }
 
 /* ---------- API ---------- */
@@ -305,22 +361,25 @@ async function requestAnalysis(report) {
 
 /* ---------- rendering ---------- */
 
-function renderMetrics(gaze, stim) {
+function renderMetrics(gaze, movement, squeeze) {
   const cards = [
     {
       label: 'Gaze toward camera', value: gaze.onCameraPct, dec: 0, unit: '%',
       typical: 'typically the majority of the time', warn: gaze.onCameraPct !== null && gaze.onCameraPct < 50,
       skip: gaze.onCameraPct === null,
     },
+    { label: 'Longest gaze streak', value: gaze.longestOnCamera, dec: 1, unit: 's' },
+    { label: 'Gaze-away glances', value: gaze.awaySegments.length, dec: 0, unit: '' },
     {
-      label: 'Longest gaze streak', value: gaze.longestOnCamera, dec: 1, unit: 's',
+      label: 'Arm/hand movement episodes', value: movement.episodeCount, dec: 0, unit: '',
+      typical: 'typically rare or brief', warn: movement.episodeCount >= 3,
     },
-    { label: 'Face detected', value: gaze.facePct, dec: 0, unit: '% of frames' },
+    { label: 'Total movement time', value: movement.totalSec, dec: 1, unit: 's' },
     {
-      label: 'Repetitive-movement episodes', value: stim.episodeCount, dec: 0, unit: '',
-      typical: 'typically rare or brief', warn: stim.episodeCount >= 3,
+      label: 'Hand-squeeze episodes', value: squeeze.episodeCount, dec: 0, unit: '',
+      typical: 'typically rare or brief', warn: squeeze.episodeCount >= 3,
     },
-    { label: 'Total repetitive-movement time', value: stim.totalStimSec, dec: 1, unit: 's' },
+    { label: 'Total squeeze time', value: squeeze.totalSec, dec: 1, unit: 's' },
     { label: 'Video analyzed', value: gaze.duration, dec: 0, unit: 's' },
   ].filter((c) => !c.skip);
 
@@ -348,7 +407,7 @@ function renderMetrics(gaze, stim) {
   });
 }
 
-function analyzePatterns(gaze, stim) {
+function analyzePatterns(gaze, movement, squeeze) {
   const flags = [];
   if (gaze.onCameraPct === null) {
     flags.push({ level: 'note', text: 'No face was reliably detected - make sure the person is facing the camera and well lit.' });
@@ -358,12 +417,20 @@ function analyzePatterns(gaze, stim) {
     flags.push({ level: 'ok', text: `Gaze stayed toward the camera ${gaze.onCameraPct.toFixed(0)}% of the time.` });
   }
 
-  if (stim.episodeCount >= 3) {
-    flags.push({ level: 'warn', text: `${stim.episodeCount} repetitive-movement episodes detected, averaging ${stim.avgEpisodeSec.toFixed(1)}s each.` });
-  } else if (stim.episodeCount > 0) {
-    flags.push({ level: 'note', text: `${stim.episodeCount} brief repetitive-movement episode${stim.episodeCount > 1 ? 's' : ''} detected.` });
+  if (movement.episodeCount >= 3) {
+    flags.push({ level: 'warn', text: `${movement.episodeCount} arm/hand movement episodes detected, averaging ${movement.avgSec.toFixed(1)}s each.` });
+  } else if (movement.episodeCount > 0) {
+    flags.push({ level: 'note', text: `${movement.episodeCount} brief movement episode${movement.episodeCount > 1 ? 's' : ''} detected.` });
   } else {
-    flags.push({ level: 'ok', text: 'No sustained repetitive hand movement detected.' });
+    flags.push({ level: 'ok', text: 'No sustained repetitive arm/hand movement detected.' });
+  }
+
+  if (squeeze.episodeCount >= 3) {
+    flags.push({ level: 'warn', text: `${squeeze.episodeCount} hand-squeezing episodes detected, averaging ${squeeze.avgSec.toFixed(1)}s each.` });
+  } else if (squeeze.episodeCount > 0) {
+    flags.push({ level: 'note', text: `${squeeze.episodeCount} brief hand-squeezing episode${squeeze.episodeCount > 1 ? 's' : ''} detected.` });
+  } else {
+    flags.push({ level: 'ok', text: 'No repeated hand-squeezing motion detected.' });
   }
 
   return flags;
@@ -376,14 +443,17 @@ function renderFlags(flags) {
     .join('');
 }
 
-function renderTimeline(gaze, stim, duration) {
+function renderTimeline(gaze, movement, squeeze, duration) {
   const pct = (t) => `${(t / duration) * 100}%`;
   let html = '<div class="tl-track">';
   gaze.awaySegments.forEach(([a, b]) => {
     html += `<div class="tl-seg gaze" style="left:${pct(a)};width:${pct(Math.max(b - a, 0.05))}" title="Gaze away ${(b - a).toFixed(1)}s"></div>`;
   });
-  stim.episodes.forEach(([a, b]) => {
-    html += `<div class="tl-seg stim" style="left:${pct(a)};width:${pct(Math.max(b - a, 0.05))}" title="Repetitive movement ${(b - a).toFixed(1)}s"></div>`;
+  movement.episodes.forEach(([a, b]) => {
+    html += `<div class="tl-seg stim" style="left:${pct(a)};width:${pct(Math.max(b - a, 0.05))}" title="Movement ${(b - a).toFixed(1)}s"></div>`;
+  });
+  squeeze.episodes.forEach(([a, b]) => {
+    html += `<div class="tl-seg squeeze" style="left:${pct(a)};width:${pct(Math.max(b - a, 0.05))}" title="Squeeze ${(b - a).toFixed(1)}s"></div>`;
   });
   html += '<div class="tl-head" id="v-tl-head"></div></div><div class="tl-axis">';
   const step = duration > 40 ? 10 : duration > 20 ? 5 : 2;
@@ -459,12 +529,15 @@ function resetLive() {
   stopTracks();
   Object.assign(live, {
     recorder: null, chunks: [], samples: [], startedAt: 0, timer: null, sampleLoopId: null, hitCap: false, cancelled: false,
+    gazeAwayCount: 0, movementCount: 0, squeezeCount: 0,
+    prevGazeAway: null, prevMovementActive: false, prevSqueezeActive: false,
   });
   const overlay = $('#v-overlay');
   overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
   const badge = $('#v-gaze-badge');
   badge.textContent = 'Gaze: --';
   badge.className = 'gaze-badge';
+  updateLiveCounters();
 }
 
 async function startLive() {
@@ -500,11 +573,18 @@ async function startLive() {
   live.hitCap = false;
   live.chunks = [];
   live.samples = [];
+  live.gazeAwayCount = 0;
+  live.movementCount = 0;
+  live.squeezeCount = 0;
+  live.prevGazeAway = null;
+  live.prevMovementActive = false;
+  live.prevSqueezeActive = false;
   live.recorder = new MediaRecorder(live.stream);
   live.recorder.ondataavailable = (e) => e.data.size && live.chunks.push(e.data);
 
   show('live');
   $('#v-rec-time').textContent = '0:00';
+  updateLiveCounters();
   live.startedAt = performance.now();
   live.recorder.start(250);
 
@@ -517,7 +597,19 @@ async function startLive() {
   const loop = () => {
     const sample = sampleLiveFrame(preview, live.startedAt);
     live.samples.push(sample);
-    drawLiveOverlay(preview, overlay, sample, isStimActiveNow(live.samples));
+
+    const movementActive = isActiveNow(live.samples, ['wristX', 'wristY'], CFG.movementWindowSec, CFG.movementReversalsPerSec);
+    const squeezeActive = isActiveNow(live.samples, ['openness'], CFG.squeezeWindowSec, CFG.squeezeReversalsPerSec);
+
+    if (sample.gazeAway === true && live.prevGazeAway !== true) live.gazeAwayCount++;
+    live.prevGazeAway = sample.gazeAway;
+    if (movementActive && !live.prevMovementActive) live.movementCount++;
+    live.prevMovementActive = movementActive;
+    if (squeezeActive && !live.prevSqueezeActive) live.squeezeCount++;
+    live.prevSqueezeActive = squeezeActive;
+    updateLiveCounters();
+
+    drawLiveOverlay(preview, overlay, sample, movementActive, squeezeActive);
     live.sampleLoopId = setTimeout(loop, CFG.sampleStepSec * 1000);
   };
   loop();
@@ -550,8 +642,9 @@ async function stopLive() {
 
   try {
     const gaze = computeGazeMetrics(samples, duration);
-    const stim = computeStimMetrics(samples, duration);
-    const flags = analyzePatterns(gaze, stim);
+    const movement = computeEpisodes(samples, ['wristX', 'wristY'], CFG.movementWindowSec, CFG.movementReversalsPerSec, CFG.minMovementEpisodeSec);
+    const squeeze = computeEpisodes(samples, ['openness'], CFG.squeezeWindowSec, CFG.squeezeReversalsPerSec, CFG.minSqueezeEpisodeSec);
+    const flags = analyzePatterns(gaze, movement, squeeze);
 
     const stamp = new Date().toLocaleString();
     $('#v-result-file').textContent = `Session recorded ${stamp}`;
@@ -563,9 +656,9 @@ async function stopLive() {
     noFace.hidden = gaze.facePct > 40;
     if (!noFace.hidden) noFace.textContent = `A face was only detected in ${gaze.facePct.toFixed(0)}% of sampled frames - gaze results may be unreliable.`;
 
-    renderMetrics(gaze, stim);
+    renderMetrics(gaze, movement, squeeze);
     renderFlags(flags);
-    renderTimeline(gaze, stim, duration);
+    renderTimeline(gaze, movement, squeeze, duration);
 
     if (playerUrl) URL.revokeObjectURL(playerUrl);
     playerUrl = URL.createObjectURL(recordedBlob);
@@ -583,9 +676,12 @@ async function stopLive() {
         facePct: Math.round(gaze.facePct),
         longestGazeStreakSec: Number(gaze.longestOnCamera.toFixed(1)),
         gazeAwayEpisodeCount: gaze.awaySegments.length,
-        stimEpisodeCount: stim.episodeCount,
-        totalStimSec: Number(stim.totalStimSec.toFixed(1)),
-        avgStimEpisodeSec: Number(stim.avgEpisodeSec.toFixed(1)),
+        movementEpisodeCount: movement.episodeCount,
+        totalMovementSec: Number(movement.totalSec.toFixed(1)),
+        avgMovementEpisodeSec: Number(movement.avgSec.toFixed(1)),
+        squeezeEpisodeCount: squeeze.episodeCount,
+        totalSqueezeSec: Number(squeeze.totalSec.toFixed(1)),
+        avgSqueezeEpisodeSec: Number(squeeze.avgSec.toFixed(1)),
       });
       ai.className = 'ai';
       ai.innerHTML = renderMarkdown(text);

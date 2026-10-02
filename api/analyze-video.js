@@ -1,5 +1,5 @@
-// Builds the interpretation prompt from measured video metrics (gaze + repetitive movement)
-// and asks OpenRouter for an explanation. Mirrors api/analyze.js.
+// Builds the interpretation prompt from measured video metrics (gaze, arm/hand movement,
+// and hand-squeezing) and asks OpenRouter for an explanation. Mirrors api/analyze.js.
 
 // Paid model first (fast and reliable); free models are frequently rate-limited, so they only serve as backups.
 const FALLBACK_MODELS = [
@@ -26,18 +26,26 @@ export default async function handler(req, res) {
   const r = (req.body || {}).report || {};
   const gazePct = r.gazeOnCameraPct === null || r.gazeOnCameraPct === undefined ? null : num(r.gazeOnCameraPct);
 
-  const prompt = `Report on exactly two things from a short video clip: gaze and repetitive movement. Nothing else - no literature review, no extra topics.
+  const prompt = `Report on exactly three things measured from a short video clip: gaze, arm/hand movement (flapping or rocking-type motion), and hand-squeezing (repeated opening/closing of the hand). Nothing else - no literature review, no extra topics.
 
-MEASUREMENTS:
-- Gaze toward the camera: ${gazePct === null ? 'not reliably measurable (face not consistently detected)' : `${gazePct}% of the time`}
+GAZE
+- Toward the camera: ${gazePct === null ? 'not reliably measurable (face not consistently detected)' : `${gazePct}% of the time`}
 - Longest unbroken gaze streak: ${num(r.longestGazeStreakSec).toFixed(1)}s
 - Distinct gaze-away glances: ${num(r.gazeAwayEpisodeCount)}
-- Repetitive hand/arm movement episodes (flapping/rocking-type motion): ${num(r.stimEpisodeCount)}
-- Total time in repetitive movement: ${num(r.totalStimSec).toFixed(1)}s
-- Average episode length: ${num(r.avgStimEpisodeSec).toFixed(1)}s
-- Clip length: ${num(r.durationSec)}s
 
-Write a short, direct report - 3 to 5 plain sentences, no headings, no bullet points, no markdown formatting, no introduction, no "in summary." One sentence on what the gaze numbers show, one or two on what the repetitive-movement numbers show, and one closing line that this is a single short clip, not a diagnosis. Nothing else.`;
+ARM/HAND MOVEMENT
+- Episodes detected: ${num(r.movementEpisodeCount)}
+- Total time: ${num(r.totalMovementSec).toFixed(1)}s
+- Average episode length: ${num(r.avgMovementEpisodeSec).toFixed(1)}s
+
+HAND-SQUEEZING
+- Episodes detected: ${num(r.squeezeEpisodeCount)}
+- Total time: ${num(r.totalSqueezeSec).toFixed(1)}s
+- Average episode length: ${num(r.avgSqueezeEpisodeSec).toFixed(1)}s
+
+Clip length: ${num(r.durationSec)}s
+
+For each of the three things above, write exactly 3 to 4 plain sentences, no headings, no bullet points, no markdown formatting: state what the numbers show, then say plainly and directly what a pattern at that frequency is generally associated with - don't hedge everything into vagueness, be concrete. End the whole report with exactly one closing sentence noting this is a single short clip, not a diagnosis. No introduction, no "in summary," nothing else.`;
 
   const models = [process.env.OPENROUTER_MODEL, ...FALLBACK_MODELS].filter(Boolean);
 

@@ -181,6 +181,7 @@
             <video id="v-live-preview" autoplay muted playsinline style="display:block;width:100%;background:#000;transform:scaleX(-1)"></video>
             <canvas id="v-overlay" style="position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none"></canvas>
           </div>
+          <div id="v-live-counts" class="live-counts">Gaze deviations: 0   Movement: 0   Squeeze: 0</div>
           <div class="rec-actions">
             <button id="v-rec-cancel" class="btn ghost" type="button">Cancel</button>
             <button id="v-rec-stop" class="btn primary" type="button">Stop and analyze</button>
@@ -219,7 +220,8 @@
             <h3>Timeline</h3>
             <div class="legend">
               <span><i class="sw gaze"></i>Gaze away</span>
-              <span><i class="sw stim"></i>Repetitive movement</span>
+              <span><i class="sw stim"></i>Movement</span>
+              <span><i class="sw squeeze"></i>Hand squeeze</span>
             </div>
           </div>
           <div id="v-timeline" class="timeline"></div>

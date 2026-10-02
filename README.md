@@ -27,13 +27,15 @@ The browser decodes the file, trims it to the first 120 seconds, and resamples i
 
 ## Video tab
 
-Runs a live webcam session and measures gaze direction and repetitive hand/arm movement in real time, entirely on-device:
+Runs a live webcam session and measures three things in real time, entirely on-device:
 
 - Starts the camera with `getUserMedia`, records up to 60 seconds with `MediaRecorder` (for playback afterward), and samples the live feed at roughly 6-7 frames/second while it runs
-- Runs MediaPipe FaceLandmarker (gaze-direction blendshapes) and PoseLandmarker (wrist position) in the browser via WebAssembly - nothing is ever uploaded, detection and recording both happen on-device
-- Gaze: % of time spent looking toward the camera vs away, longest unbroken gaze streak, number of distinct away-glances
-- Repetitive movement: detected as sustained oscillation in wrist position (direction reversals per second over a sliding window), reported as episode count and total/average duration
-- Sends only the resulting numbers (never the video) to `api/analyze-video.js` for the same kind of educational, non-diagnostic AI interpretation the speech tool writes
+- Runs MediaPipe FaceLandmarker (gaze-direction blendshapes) and HandLandmarker (21-point hand skeleton) in the browser via WebAssembly - nothing is ever uploaded, detection and recording both happen on-device
+- **Live feedback while recording**: the hand skeleton is drawn directly on the camera preview (green, flashing red when a repetitive pattern is active), the wrist point enlarges when arm-level movement is active, a gaze badge shows on-camera/away/no-face live, and a running counter shows gaze-deviation/movement/squeeze counts updating as they happen
+- **Gaze**: % of time looking toward the camera vs away, longest unbroken streak, number of distinct away-glances
+- **Arm/hand movement** (flapping, rocking): sustained oscillation in wrist position (direction reversals/sec over a sliding window) - episode count and total/average duration
+- **Hand-squeezing**: sustained oscillation in hand openness (the average distance from wrist to fingertips, normalized by hand size, so it tracks the hand opening and closing rather than moving) - episode count and total/average duration
+- Sends only the resulting numbers (never the video) to `api/analyze-video.js`, which reports on exactly these three things in a short, direct, non-diagnostic explanation
 
 ## Deploy to Vercel
 
