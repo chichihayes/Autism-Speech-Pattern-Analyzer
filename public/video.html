@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Speech Pattern Analyzer</title>
-  <meta name="description" content="Speech timing and fluency analysis: transcription, pacing metrics, repetition detection and AI-assisted interpretation.">
+  <title>Video Behavior Check</title>
+  <meta name="description" content="Gaze and repetitive-movement analysis from a video recording, with an AI-assisted interpretation.">
   <meta name="theme-color" content="#000000">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000'/%3E%3Cpath d='M6 16h2m3-5v10m4-13v16m4-11v6m4-3h2' stroke='%2367e8f9' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,10 +21,10 @@
         <path d="M6 16h2m3-5v10m4-13v16m4-11v6m4-3h2" stroke="url(#g)" stroke-width="2.6" stroke-linecap="round" fill="none"/>
         <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#67e8f9"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
       </svg>
-      <span>Speech Pattern Analyzer</span>
+      <span>Video Behavior Check</span>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
-      <a class="pill" href="/video.html">Video check &rarr;</a>
+      <a class="pill" href="/">&larr; Speech Analyzer</a>
       <span class="pill">Educational use only</span>
     </div>
   </header>
@@ -32,33 +32,18 @@
   <main>
     <!-- Upload -->
     <section id="view-upload" class="hero">
-      <h1>Hear the <span class="grad">rhythm</span> behind speech.</h1>
-      <p class="lead">Upload a recording to measure response time, speech rate, word duration and repetition, with an AI-written explanation of what the numbers show.</p>
+      <h1>See the <span class="grad">patterns</span> behind the moment.</h1>
+      <p class="lead">Upload a video of a session to measure gaze and repetitive movement, with an AI-written explanation of what the numbers show. Everything is analyzed in your browser — no video is uploaded to a server.</p>
 
       <div id="chooser">
       <label id="dropzone" class="dropzone" tabindex="0">
-        <input id="file" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" hidden>
+        <input id="file" type="file" accept="video/*,.mp4,.mov,.webm,.m4v" hidden>
         <div class="dz-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M12 3v12m0-12L7.5 7.5M12 3l4.5 4.5M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </div>
-        <div class="dz-title">Drop an audio file here, or <u>browse</u></div>
-        <div class="dz-sub">WAV, MP3, M4A, FLAC or OGG &middot; the first 2 minutes are analyzed &middot; 5-10 seconds of clear speech minimum</div>
+        <div class="dz-title">Drop a video file here, or <u>browse</u></div>
+        <div class="dz-sub">MP4, MOV or WEBM &middot; the first 60 seconds are analyzed &middot; one person, facing the camera, works best</div>
       </label>
-
-      <div id="or" class="or"><span>or</span></div>
-
-      <button id="record" class="btn record-btn" type="button">
-        <span class="rec-dot" aria-hidden="true"></span>Record a voice note
-      </button>
-
-      <div id="recorder" class="recorder" hidden>
-        <div class="rec-top"><span class="rec-live"><i></i>Recording</span><span id="rec-time" class="rec-time">0:00</span></div>
-        <canvas id="rec-meter" class="rec-meter" width="640" height="64"></canvas>
-        <div class="rec-actions">
-          <button id="rec-cancel" class="btn ghost" type="button">Cancel</button>
-          <button id="rec-stop" class="btn primary" type="button">Stop and review</button>
-        </div>
-      </div>
       </div>
 
       <div id="picked" class="picked" hidden>
@@ -66,10 +51,10 @@
           <div id="picked-name" class="picked-name"></div>
           <div id="picked-meta" class="picked-meta"></div>
         </div>
-        <audio id="preview" controls></audio>
+        <video id="preview" controls muted playsinline></video>
         <div class="picked-actions">
           <button id="clear" class="btn ghost" type="button">Remove</button>
-          <button id="analyze" class="btn primary" type="button">Analyze speech</button>
+          <button id="analyze" class="btn primary" type="button">Analyze video</button>
         </div>
       </div>
 
@@ -79,12 +64,16 @@
     <!-- Processing -->
     <section id="view-progress" class="progress" hidden>
       <div class="spinner" aria-hidden="true"></div>
-      <h2>Analyzing your recording</h2>
+      <h2>Analyzing the video</h2>
       <ol id="steps" class="steps">
-        <li data-step="prepare">Preparing audio</li>
-        <li data-step="transcribe">Transcribing with Whisper</li>
-        <li data-step="metrics">Measuring speech timing</li>
+        <li data-step="prepare">Preparing video</li>
+        <li data-step="models">Loading detection models</li>
+        <li data-step="scan">Scanning frames for gaze &amp; movement</li>
+        <li data-step="metrics">Measuring patterns</li>
       </ol>
+      <div id="scan-progress" class="scan-progress" hidden>
+        <div id="scan-bar" class="scan-bar"></div>
+      </div>
     </section>
 
     <!-- Results -->
@@ -98,6 +87,7 @@
       </div>
 
       <div id="trim-note" class="alert note" hidden></div>
+      <div id="no-face-note" class="alert note" hidden></div>
 
       <div id="metrics" class="metrics"></div>
 
@@ -108,32 +98,20 @@
 
       <div class="card">
         <div class="card-head">
-          <h3>Speech timeline</h3>
+          <h3>Timeline</h3>
           <div class="legend">
-            <span><i class="sw word"></i>Word</span>
-            <span><i class="sw long"></i>Extended</span>
-            <span><i class="sw gap"></i>Pause &gt; 1s</span>
+            <span><i class="sw gaze"></i>Gaze away</span>
+            <span><i class="sw stim"></i>Repetitive movement</span>
           </div>
         </div>
         <div id="timeline" class="timeline"></div>
-        <audio id="player" controls></audio>
-      </div>
-
-      <div class="card">
-        <h3>Transcript</h3>
-        <p class="hint">Click any word to jump to it. Words follow the audio as it plays.</p>
-        <div id="transcript" class="transcript"></div>
+        <video id="player" controls playsinline></video>
       </div>
 
       <div class="card">
         <h3>AI analysis</h3>
         <div id="ai" class="ai"></div>
       </div>
-
-      <details class="card table-card">
-        <summary>Word-by-word timing</summary>
-        <div id="word-table" class="word-table"></div>
-      </details>
     </section>
   </main>
 
@@ -141,6 +119,6 @@
     This tool is for educational purposes only and is not a diagnostic tool. Consult healthcare professionals for clinical assessment.
   </footer>
 
-  <script src="/app.js" defer></script>
+  <script src="/video.js" type="module"></script>
 </body>
 </html>

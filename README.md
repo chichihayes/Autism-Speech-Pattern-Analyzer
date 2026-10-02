@@ -16,11 +16,22 @@ A dark-themed web app that measures speech timing and fluency from an audio reco
 
 | Piece | Role |
 | --- | --- |
-| `public/` | Static site: `index.html`, `style.css`, `app.js` |
+| `public/` | Static site: `index.html`, `style.css`, `app.js`, `video.html`, `video.js` |
 | `api/transcribe.js` | Sends the audio to Groq Whisper and returns word timings |
-| `api/analyze.js` | Builds the prompt from the measured metrics and calls OpenRouter |
+| `api/analyze.js` | Builds the prompt from the measured speech metrics and calls OpenRouter |
+| `api/analyze-video.js` | Builds the prompt from the measured video metrics and calls OpenRouter |
 
 The browser decodes the file, trims it to the first 120 seconds, and resamples it to 16 kHz mono WAV before upload. That keeps the request under Vercel's 4.5 MB body limit and replaces the librosa step from the earlier Python version. API keys stay on the server.
+
+## Video Behavior Check (`/video.html`)
+
+A second page that measures gaze direction and repetitive hand/arm movement from an uploaded video, entirely on-device:
+
+- Runs MediaPipe FaceLandmarker (gaze-direction blendshapes) and PoseLandmarker (wrist position) in the browser via WebAssembly - the video itself never leaves the device
+- Samples the first 60 seconds at roughly 6-7 frames/second
+- Gaze: % of time spent looking toward the camera vs away, longest unbroken gaze streak, number of distinct away-glances
+- Repetitive movement: detected as sustained oscillation in wrist position (direction reversals per second over a sliding window), reported as episode count and total/average duration
+- Sends only the resulting numbers (never the video) to `api/analyze-video.js` for the same kind of educational, non-diagnostic AI interpretation the speech tool writes
 
 ## Deploy to Vercel
 
