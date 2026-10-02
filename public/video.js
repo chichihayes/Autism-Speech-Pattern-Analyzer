@@ -17,11 +17,11 @@ const CFG = {
 
 const $ = (sel) => document.querySelector(sel);
 const views = {
-  start: $('#view-start'),
-  loading: $('#view-loading'),
-  live: $('#view-live'),
-  progress: $('#view-progress'),
-  results: $('#view-results'),
+  start: $('#v-view-start'),
+  loading: $('#v-view-loading'),
+  live: $('#v-view-live'),
+  progress: $('#v-view-progress'),
+  results: $('#v-view-results'),
 };
 
 let faceLandmarker = null;
@@ -54,13 +54,13 @@ function show(name) {
 }
 
 function showError(msg) {
-  const el = $('#error');
+  const el = $('#v-error');
   el.textContent = msg;
   el.hidden = !msg;
 }
 
 function setStep(name) {
-  const items = [...document.querySelectorAll('#steps li')];
+  const items = [...document.querySelectorAll('#v-steps li')];
   const idx = items.findIndex((li) => li.dataset.step === name);
   items.forEach((li, i) => {
     li.classList.toggle('done', i < idx);
@@ -260,7 +260,7 @@ function renderMetrics(gaze, stim) {
     { label: 'Video analyzed', value: gaze.duration, dec: 0, unit: 's' },
   ].filter((c) => !c.skip);
 
-  $('#metrics').innerHTML = cards
+  $('#v-metrics').innerHTML = cards
     .map((c, i) => {
       const state = c.typical ? (c.warn ? 'warn' : 'ok') : '';
       return `<div class="metric ${state}" style="animation-delay:${i * 60}ms">
@@ -271,7 +271,7 @@ function renderMetrics(gaze, stim) {
     })
     .join('');
 
-  document.querySelectorAll('#metrics [data-to]').forEach((el) => {
+  document.querySelectorAll('#v-metrics [data-to]').forEach((el) => {
     const to = Number(el.dataset.to);
     const dec = Number(el.dataset.dec);
     const t0 = performance.now();
@@ -307,7 +307,7 @@ function analyzePatterns(gaze, stim) {
 
 function renderFlags(flags) {
   const icons = { warn: '!', note: 'i', ok: '✓' };
-  $('#flags').innerHTML = flags
+  $('#v-flags').innerHTML = flags
     .map((f) => `<div class="flag ${f.level}"><span class="ic">${icons[f.level]}</span><span>${esc(f.text)}</span></div>`)
     .join('');
 }
@@ -321,23 +321,23 @@ function renderTimeline(gaze, stim, duration) {
   stim.episodes.forEach(([a, b]) => {
     html += `<div class="tl-seg stim" style="left:${pct(a)};width:${pct(Math.max(b - a, 0.05))}" title="Repetitive movement ${(b - a).toFixed(1)}s"></div>`;
   });
-  html += '<div class="tl-head" id="tl-head"></div></div><div class="tl-axis">';
+  html += '<div class="tl-head" id="v-tl-head"></div></div><div class="tl-axis">';
   const step = duration > 40 ? 10 : duration > 20 ? 5 : 2;
   for (let t = 0; t <= duration; t += step) html += `<span style="left:${pct(t)}">${t}s</span>`;
   html += '</div>';
-  $('#timeline').innerHTML = html;
+  $('#v-timeline').innerHTML = html;
 }
 
 function bindPlaybackHead(duration) {
-  const player = $('#player');
-  const head = $('#tl-head');
+  const player = $('#v-player');
+  const head = $('#v-tl-head');
   let raf = null;
   const update = () => { head.style.left = `${Math.min(100, (player.currentTime / duration) * 100)}%`; };
   const loop = () => { update(); raf = requestAnimationFrame(loop); };
   player.onplay = () => { cancelAnimationFrame(raf); loop(); };
   player.onpause = player.onended = () => { cancelAnimationFrame(raf); update(); };
   player.onseeked = update;
-  $('#timeline').onclick = (e) => {
+  $('#v-timeline').onclick = (e) => {
     const track = e.target.closest('.tl-track');
     if (!track) return;
     const rect = track.getBoundingClientRect();
@@ -414,7 +414,7 @@ async function startLive() {
     return showError('Camera access was blocked. Allow the camera in your browser and try again.');
   }
 
-  const preview = $('#live-preview');
+  const preview = $('#v-live-preview');
   preview.srcObject = live.stream;
 
   try {
@@ -434,13 +434,13 @@ async function startLive() {
   live.recorder.ondataavailable = (e) => e.data.size && live.chunks.push(e.data);
 
   show('live');
-  $('#rec-time').textContent = '0:00';
+  $('#v-rec-time').textContent = '0:00';
   live.startedAt = performance.now();
   live.recorder.start(250);
 
   live.timer = setInterval(() => {
     const secs = (performance.now() - live.startedAt) / 1000;
-    $('#rec-time').textContent = fmtClock(secs);
+    $('#v-rec-time').textContent = fmtClock(secs);
     if (secs >= CFG.maxSeconds) { live.hitCap = true; stopLive(); }
   }, 250);
 
@@ -482,12 +482,12 @@ async function stopLive() {
     const flags = analyzePatterns(gaze, stim);
 
     const stamp = new Date().toLocaleString();
-    $('#result-file').textContent = `Session recorded ${stamp}`;
-    const note = $('#trim-note');
+    $('#v-result-file').textContent = `Session recorded ${stamp}`;
+    const note = $('#v-trim-note');
     note.hidden = !hitCap;
     if (hitCap) note.textContent = `Recording reached the ${CFG.maxSeconds}s cap and stopped automatically.`;
 
-    const noFace = $('#no-face-note');
+    const noFace = $('#v-no-face-note');
     noFace.hidden = gaze.facePct > 40;
     if (!noFace.hidden) noFace.textContent = `A face was only detected in ${gaze.facePct.toFixed(0)}% of sampled frames - gaze results may be unreliable.`;
 
@@ -497,11 +497,11 @@ async function stopLive() {
 
     if (playerUrl) URL.revokeObjectURL(playerUrl);
     playerUrl = URL.createObjectURL(recordedBlob);
-    $('#player').src = playerUrl;
+    $('#v-player').src = playerUrl;
     bindPlaybackHead(duration);
     show('results');
 
-    const ai = $('#ai');
+    const ai = $('#v-ai');
     ai.className = 'ai loading';
     ai.innerHTML = '<span class="mini"></span>Generating analysis…';
     try {
@@ -531,10 +531,10 @@ async function stopLive() {
 
 /* ---------- events ---------- */
 
-$('#start').addEventListener('click', startLive);
-$('#rec-stop').addEventListener('click', stopLive);
-$('#rec-cancel').addEventListener('click', cancelLive);
-$('#again').addEventListener('click', () => {
-  $('#player').pause();
+$('#v-start').addEventListener('click', startLive);
+$('#v-rec-stop').addEventListener('click', stopLive);
+$('#v-rec-cancel').addEventListener('click', cancelLive);
+$('#v-again').addEventListener('click', () => {
+  $('#v-player').pause();
   show('start');
 });

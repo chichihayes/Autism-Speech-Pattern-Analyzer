@@ -1,6 +1,6 @@
-# Speech Pattern Analyzer
+# Speech & Video Pattern Analyzer
 
-A dark-themed web app that measures speech timing and fluency from an audio recording and explains the results with AI. Plain HTML, CSS and JavaScript on the front end, with two small serverless functions on Vercel. No framework and no TypeScript.
+A dark-themed web app with two tabs - Speech and Video - that measure behavioral patterns and explain the results with AI. Plain HTML, CSS and JavaScript on the front end, with small serverless functions on Vercel. No framework and no TypeScript.
 
 > For educational and research use only. It is not a diagnostic tool.
 
@@ -16,16 +16,18 @@ A dark-themed web app that measures speech timing and fluency from an audio reco
 
 | Piece | Role |
 | --- | --- |
-| `public/` | Static site: `index.html`, `style.css`, `app.js`, `video.html`, `video.js` |
+| `public/index.html` | Single page with two tabs (Speech, Video); tab switching is a tiny inline script |
+| `public/app.js` | Speech tab's logic |
+| `public/video.js` | Video tab's logic (its DOM ids are all prefixed `v-` so the two tabs' scripts never collide) |
 | `api/transcribe.js` | Sends the audio to Groq Whisper and returns word timings |
 | `api/analyze.js` | Builds the prompt from the measured speech metrics and calls OpenRouter |
 | `api/analyze-video.js` | Builds the prompt from the measured video metrics and calls OpenRouter |
 
 The browser decodes the file, trims it to the first 120 seconds, and resamples it to 16 kHz mono WAV before upload. That keeps the request under Vercel's 4.5 MB body limit and replaces the librosa step from the earlier Python version. API keys stay on the server.
 
-## Video Behavior Check (`/video.html`)
+## Video tab
 
-A second page that runs a live webcam session and measures gaze direction and repetitive hand/arm movement in real time, entirely on-device:
+Runs a live webcam session and measures gaze direction and repetitive hand/arm movement in real time, entirely on-device:
 
 - Starts the camera with `getUserMedia`, records up to 60 seconds with `MediaRecorder` (for playback afterward), and samples the live feed at roughly 6-7 frames/second while it runs
 - Runs MediaPipe FaceLandmarker (gaze-direction blendshapes) and PoseLandmarker (wrist position) in the browser via WebAssembly - nothing is ever uploaded, detection and recording both happen on-device
