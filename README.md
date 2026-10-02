@@ -25,10 +25,10 @@ The browser decodes the file, trims it to the first 120 seconds, and resamples i
 
 ## Video Behavior Check (`/video.html`)
 
-A second page that measures gaze direction and repetitive hand/arm movement from an uploaded video, entirely on-device:
+A second page that runs a live webcam session and measures gaze direction and repetitive hand/arm movement in real time, entirely on-device:
 
-- Runs MediaPipe FaceLandmarker (gaze-direction blendshapes) and PoseLandmarker (wrist position) in the browser via WebAssembly - the video itself never leaves the device
-- Samples the first 60 seconds at roughly 6-7 frames/second
+- Starts the camera with `getUserMedia`, records up to 60 seconds with `MediaRecorder` (for playback afterward), and samples the live feed at roughly 6-7 frames/second while it runs
+- Runs MediaPipe FaceLandmarker (gaze-direction blendshapes) and PoseLandmarker (wrist position) in the browser via WebAssembly - nothing is ever uploaded, detection and recording both happen on-device
 - Gaze: % of time spent looking toward the camera vs away, longest unbroken gaze streak, number of distinct away-glances
 - Repetitive movement: detected as sustained oscillation in wrist position (direction reversals per second over a sliding window), reported as episode count and total/average duration
 - Sends only the resulting numbers (never the video) to `api/analyze-video.js` for the same kind of educational, non-diagnostic AI interpretation the speech tool writes

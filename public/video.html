@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Video Behavior Check</title>
-  <meta name="description" content="Gaze and repetitive-movement analysis from a video recording, with an AI-assisted interpretation.">
+  <meta name="description" content="Live gaze and repetitive-movement analysis from a webcam session, with an AI-assisted interpretation.">
   <meta name="theme-color" content="#000000">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000'/%3E%3Cpath d='M6 16h2m3-5v10m4-13v16m4-11v6m4-3h2' stroke='%2367e8f9' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,50 +30,45 @@
   </header>
 
   <main>
-    <!-- Upload -->
-    <section id="view-upload" class="hero">
+    <!-- Start -->
+    <section id="view-start" class="hero">
       <h1>See the <span class="grad">patterns</span> behind the moment.</h1>
-      <p class="lead">Upload a video of a session to measure gaze and repetitive movement, with an AI-written explanation of what the numbers show. Everything is analyzed in your browser — no video is uploaded to a server.</p>
+      <p class="lead">Start a live camera session to measure gaze and repetitive movement in real time, with an AI-written explanation of what the numbers show. Everything is analyzed in your browser — nothing is uploaded to a server.</p>
 
-      <div id="chooser">
-      <label id="dropzone" class="dropzone" tabindex="0">
-        <input id="file" type="file" accept="video/*,.mp4,.mov,.webm,.m4v" hidden>
-        <div class="dz-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M12 3v12m0-12L7.5 7.5M12 3l4.5 4.5M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </div>
-        <div class="dz-title">Drop a video file here, or <u>browse</u></div>
-        <div class="dz-sub">MP4, MOV or WEBM &middot; the first 60 seconds are analyzed &middot; one person, facing the camera, works best</div>
-      </label>
-      </div>
-
-      <div id="picked" class="picked" hidden>
-        <div class="picked-info">
-          <div id="picked-name" class="picked-name"></div>
-          <div id="picked-meta" class="picked-meta"></div>
-        </div>
-        <video id="preview" controls muted playsinline></video>
-        <div class="picked-actions">
-          <button id="clear" class="btn ghost" type="button">Remove</button>
-          <button id="analyze" class="btn primary" type="button">Analyze video</button>
-        </div>
-      </div>
+      <button id="start" class="btn primary" type="button" style="display:inline-flex;align-items:center;gap:10px">
+        <span class="rec-dot" aria-hidden="true"></span>Start live check
+      </button>
+      <div class="dz-sub" style="margin-top:14px">Records up to 60 seconds &middot; one person, facing the camera, works best</div>
 
       <div id="error" class="alert error" role="alert" hidden></div>
     </section>
 
-    <!-- Processing -->
+    <!-- Loading camera + models -->
+    <section id="view-loading" class="progress" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <h2>Getting ready</h2>
+      <ol id="steps" class="steps">
+        <li data-step="camera">Requesting camera access</li>
+        <li data-step="models">Loading detection models</li>
+      </ol>
+    </section>
+
+    <!-- Live capture -->
+    <section id="view-live" class="hero" hidden>
+      <div class="recorder" style="max-width:720px">
+        <div class="rec-top"><span class="rec-live"><i></i>Live</span><span id="rec-time" class="rec-time">0:00</span></div>
+        <video id="live-preview" autoplay muted playsinline style="width:100%;border-radius:12px;background:#000;transform:scaleX(-1)"></video>
+        <div class="rec-actions">
+          <button id="rec-cancel" class="btn ghost" type="button">Cancel</button>
+          <button id="rec-stop" class="btn primary" type="button">Stop and analyze</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Processing (near-instant - just the math on already-collected samples) -->
     <section id="view-progress" class="progress" hidden>
       <div class="spinner" aria-hidden="true"></div>
-      <h2>Analyzing the video</h2>
-      <ol id="steps" class="steps">
-        <li data-step="prepare">Preparing video</li>
-        <li data-step="models">Loading detection models</li>
-        <li data-step="scan">Scanning frames for gaze &amp; movement</li>
-        <li data-step="metrics">Measuring patterns</li>
-      </ol>
-      <div id="scan-progress" class="scan-progress" hidden>
-        <div id="scan-bar" class="scan-bar"></div>
-      </div>
+      <h2>Measuring patterns</h2>
     </section>
 
     <!-- Results -->

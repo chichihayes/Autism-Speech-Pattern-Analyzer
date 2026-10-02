@@ -1,14 +1,13 @@
 // Video Behavior Check: browser client.
-// A video file is sampled locally with on-device MediaPipe models (gaze direction from face
-// blendshapes, wrist position from pose landmarks). Nothing is uploaded — only the resulting
-// numeric report is sent to /api/analyze-video for an AI-written interpretation.
+// A live camera session is sampled in real time with on-device MediaPipe models (gaze
+// direction from face blendshapes, wrist position from pose landmarks). Nothing is uploaded —
+// only the resulting numeric report is sent to /api/analyze-video for an AI-written interpretation.
 
 import { FilesetResolver, FaceLandmarker, PoseLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
 
 const CFG = {
   maxSeconds: 60,
-  maxFileBytes: 500 * 1024 * 1024,
-  sampleStepSec: 0.15, // ~6.7 samples/sec: enough to catch a flapping/rocking rhythm, light enough to finish in reasonable time
+  sampleStepSec: 0.15, // ~6.7 samples/sec: enough to catch a flapping/rocking rhythm
   gazeAwayThreshold: 0.35, // blendshape score above which gaze counts as "away" rather than centered
   minGazeAwaySegment: 0.6, // seconds - ignore blinks/glances shorter than this
   stimWindowSec: 1.5, // sliding window used to detect oscillation
@@ -17,20 +16,37 @@ const CFG = {
 };
 
 const $ = (sel) => document.querySelector(sel);
-const views = { upload: $('#view-upload'), progress: $('#view-progress'), results: $('#view-results') };
+const views = {
+  start: $('#view-start'),
+  loading: $('#view-loading'),
+  live: $('#view-live'),
+  progress: $('#view-progress'),
+  results: $('#view-results'),
+};
 
-let selectedFile = null;
-let previewUrl = null;
-let playerUrl = null;
 let faceLandmarker = null;
 let poseLandmarker = null;
+let playerUrl = null;
+
+// Live-session state
+const live = {
+  stream: null,
+  recorder: null,
+  chunks: [],
+  samples: [],
+  startedAt: 0,
+  timer: null,
+  sampleLoopId: null,
+  hitCap: false,
+  cancelled: false,
+};
 
 /* ---------- helpers ---------- */
 
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-const fmtBytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const fmtClock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 function show(name) {
   for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
@@ -50,12 +66,6 @@ function setStep(name) {
     li.classList.toggle('done', i < idx);
     li.classList.toggle('active', i === idx);
   });
-}
-
-function setScanProgress(frac) {
-  const bar = $('#scan-progress');
-  bar.hidden = false;
-  $('#scan-bar').style.width = `${Math.min(100, Math.max(0, frac * 100))}%`;
 }
 
 /* ---------- on-device models ---------- */
@@ -89,61 +99,44 @@ async function loadModels() {
   });
 }
 
-function seekTo(video, t) {
-  return new Promise((resolve) => {
-    const done = () => { video.removeEventListener('seeked', done); resolve(); };
-    video.addEventListener('seeked', done);
-    video.currentTime = t;
-    // Some browsers don't fire `seeked` for a sub-frame seek to the same decoded frame.
-    setTimeout(done, 300);
-  });
-}
-
 function blendshapeScore(categories, name) {
   return categories?.find((c) => c.categoryName === name)?.score || 0;
 }
 
-async function scanVideo(video, onProgress) {
-  const duration = Math.min(video.duration, CFG.maxSeconds);
-  const samples = []; // { t, gazeAway: bool|null, leftY, rightY }
+// Pulls one sample from the live preview video at this instant. Runs on an interval while
+// the live session is active - `video.currentTime` and `performance.now()` are both strictly
+// increasing on a live stream, which is what detectForVideo requires.
+function sampleLiveFrame(video, startedAt) {
+  const t = (performance.now() - startedAt) / 1000;
+  const tsMs = Math.round(performance.now());
 
-  let t = 0;
-  while (t < duration) {
-    await seekTo(video, t);
-    const tsMs = Math.round(t * 1000);
+  let gazeAway = null;
+  try {
+    const faceResult = faceLandmarker.detectForVideo(video, tsMs);
+    const categories = faceResult?.faceBlendshapes?.[0]?.categories;
+    if (categories) {
+      const away = Math.max(
+        blendshapeScore(categories, 'eyeLookInLeft'),
+        blendshapeScore(categories, 'eyeLookOutLeft'),
+        blendshapeScore(categories, 'eyeLookUpLeft'),
+        blendshapeScore(categories, 'eyeLookDownLeft'),
+        blendshapeScore(categories, 'eyeLookInRight'),
+        blendshapeScore(categories, 'eyeLookOutRight'),
+        blendshapeScore(categories, 'eyeLookUpRight'),
+        blendshapeScore(categories, 'eyeLookDownRight')
+      );
+      gazeAway = away > CFG.gazeAwayThreshold;
+    }
+  } catch { /* face model hiccup on this frame - leave as "no face" */ }
 
-    let gazeAway = null;
-    try {
-      const faceResult = faceLandmarker.detectForVideo(video, tsMs);
-      const categories = faceResult?.faceBlendshapes?.[0]?.categories;
-      if (categories) {
-        const away = Math.max(
-          blendshapeScore(categories, 'eyeLookInLeft'),
-          blendshapeScore(categories, 'eyeLookOutLeft'),
-          blendshapeScore(categories, 'eyeLookUpLeft'),
-          blendshapeScore(categories, 'eyeLookDownLeft'),
-          blendshapeScore(categories, 'eyeLookInRight'),
-          blendshapeScore(categories, 'eyeLookOutRight'),
-          blendshapeScore(categories, 'eyeLookUpRight'),
-          blendshapeScore(categories, 'eyeLookDownRight')
-        );
-        gazeAway = away > CFG.gazeAwayThreshold;
-      }
-    } catch { /* face model hiccup on this frame - leave as "no face" */ }
+  let leftY = null, rightY = null;
+  try {
+    const poseResult = poseLandmarker.detectForVideo(video, tsMs);
+    const lm = poseResult?.landmarks?.[0];
+    if (lm) { leftY = lm[15].y; rightY = lm[16].y; }
+  } catch { /* pose model hiccup on this frame */ }
 
-    let leftY = null, rightY = null;
-    try {
-      const poseResult = poseLandmarker.detectForVideo(video, tsMs);
-      const lm = poseResult?.landmarks?.[0];
-      if (lm) { leftY = lm[15].y; rightY = lm[16].y; }
-    } catch { /* pose model hiccup on this frame */ }
-
-    samples.push({ t, gazeAway, leftY, rightY });
-    t += CFG.sampleStepSec;
-    onProgress(t / duration);
-  }
-
-  return { samples, duration };
+  return { t, gazeAway, leftY, rightY };
 }
 
 /* ---------- metrics ---------- */
@@ -391,77 +384,108 @@ function renderMarkdown(src) {
 
 /* ---------- flow ---------- */
 
-function pickFile(file) {
-  showError('');
-  if (!file) return;
-  if (!file.type.startsWith('video/') && !/\.(mp4|mov|webm|m4v)$/i.test(file.name)) {
-    return showError('Please choose a video file (MP4, MOV or WEBM).');
-  }
-  if (file.size > CFG.maxFileBytes) {
-    return showError('That file is too large. Please choose one under 500 MB.');
-  }
-
-  selectedFile = file;
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = URL.createObjectURL(file);
-  $('#preview').src = previewUrl;
-  $('#picked-name').textContent = file.name;
-  $('#picked-meta').textContent = `${fmtBytes(file.size)} · ${file.type || 'video'}`;
-  $('#chooser').hidden = true;
-  $('#picked').hidden = false;
+function stopTracks() {
+  live.stream?.getTracks().forEach((t) => t.stop());
+  live.stream = null;
 }
 
-function clearFile() {
-  selectedFile = null;
-  $('#file').value = '';
-  $('#preview').removeAttribute('src');
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = null;
-  $('#picked').hidden = true;
-  $('#chooser').hidden = false;
-  showError('');
-}
-
-function loadVideoElement(file) {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    video.src = URL.createObjectURL(file);
-    video.onloadedmetadata = () => resolve(video);
-    video.onerror = () => reject(new Error("This video couldn't be loaded. Try an MP4 or MOV file."));
+function resetLive() {
+  clearInterval(live.timer);
+  clearTimeout(live.sampleLoopId);
+  stopTracks();
+  Object.assign(live, {
+    recorder: null, chunks: [], samples: [], startedAt: 0, timer: null, sampleLoopId: null, hitCap: false, cancelled: false,
   });
 }
 
-async function run() {
-  if (!selectedFile) return;
+async function startLive() {
   showError('');
-  show('progress');
-  $('#scan-progress').hidden = true;
-  $('#scan-bar').style.width = '0%';
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return showError('Camera access is not supported in this browser.');
+  }
+
+  show('loading');
+  setStep('camera');
 
   try {
-    setStep('prepare');
-    const video = await loadVideoElement(selectedFile);
-    const trimmed = video.duration > CFG.maxSeconds;
-    const fullDuration = video.duration;
+    live.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+  } catch {
+    show('start');
+    return showError('Camera access was blocked. Allow the camera in your browser and try again.');
+  }
 
+  const preview = $('#live-preview');
+  preview.srcObject = live.stream;
+
+  try {
     setStep('models');
     await loadModels();
+  } catch {
+    stopTracks();
+    show('start');
+    return showError("Couldn't load the on-device detection models. Check your connection and try again.");
+  }
 
-    setStep('scan');
-    const { samples, duration } = await scanVideo(video, setScanProgress);
+  live.cancelled = false;
+  live.hitCap = false;
+  live.chunks = [];
+  live.samples = [];
+  live.recorder = new MediaRecorder(live.stream);
+  live.recorder.ondataavailable = (e) => e.data.size && live.chunks.push(e.data);
 
-    setStep('metrics');
+  show('live');
+  $('#rec-time').textContent = '0:00';
+  live.startedAt = performance.now();
+  live.recorder.start(250);
+
+  live.timer = setInterval(() => {
+    const secs = (performance.now() - live.startedAt) / 1000;
+    $('#rec-time').textContent = fmtClock(secs);
+    if (secs >= CFG.maxSeconds) { live.hitCap = true; stopLive(); }
+  }, 250);
+
+  const loop = () => {
+    live.samples.push(sampleLiveFrame(preview, live.startedAt));
+    live.sampleLoopId = setTimeout(loop, CFG.sampleStepSec * 1000);
+  };
+  loop();
+}
+
+function cancelLive() {
+  live.cancelled = true;
+  if (live.recorder?.state === 'recording') live.recorder.stop();
+  resetLive();
+  show('start');
+}
+
+async function stopLive() {
+  if (live.cancelled || !live.recorder) return;
+  clearInterval(live.timer);
+  clearTimeout(live.sampleLoopId);
+
+  const samples = live.samples;
+  const duration = Math.min((performance.now() - live.startedAt) / 1000, CFG.maxSeconds);
+  const hitCap = live.hitCap;
+
+  const recordedBlob = await new Promise((resolve) => {
+    live.recorder.onstop = () => resolve(new Blob(live.chunks, { type: live.recorder.mimeType || 'video/webm' }));
+    if (live.recorder.state === 'recording') live.recorder.stop();
+    else resolve(new Blob(live.chunks, { type: live.recorder.mimeType || 'video/webm' }));
+  });
+  stopTracks();
+
+  show('progress');
+
+  try {
     const gaze = computeGazeMetrics(samples, duration);
     const stim = computeStimMetrics(samples, duration);
     const flags = analyzePatterns(gaze, stim);
 
-    $('#result-file').textContent = selectedFile.name;
+    const stamp = new Date().toLocaleString();
+    $('#result-file').textContent = `Session recorded ${stamp}`;
     const note = $('#trim-note');
-    note.hidden = !trimmed;
-    if (trimmed) note.textContent = `Your video is ${Math.round(fullDuration)}s long. Only the first ${CFG.maxSeconds}s were analyzed.`;
+    note.hidden = !hitCap;
+    if (hitCap) note.textContent = `Recording reached the ${CFG.maxSeconds}s cap and stopped automatically.`;
 
     const noFace = $('#no-face-note');
     noFace.hidden = gaze.facePct > 40;
@@ -472,7 +496,7 @@ async function run() {
     renderTimeline(gaze, stim, duration);
 
     if (playerUrl) URL.revokeObjectURL(playerUrl);
-    playerUrl = URL.createObjectURL(selectedFile);
+    playerUrl = URL.createObjectURL(recordedBlob);
     $('#player').src = playerUrl;
     bindPlaybackHead(duration);
     show('results');
@@ -498,28 +522,19 @@ async function run() {
       ai.textContent = `AI analysis is unavailable right now. ${err.message}`;
     }
   } catch (err) {
-    show('upload');
+    show('start');
     showError(err.message || 'Something went wrong. Please try again.');
+  } finally {
+    resetLive();
   }
 }
 
 /* ---------- events ---------- */
 
-const dz = $('#dropzone');
-$('#file').addEventListener('change', (e) => pickFile(e.target.files[0]));
-dz.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#file').click(); }
-});
-['dragenter', 'dragover'].forEach((t) =>
-  dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add('drag'); }));
-['dragleave', 'drop'].forEach((t) =>
-  dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.remove('drag'); }));
-dz.addEventListener('drop', (e) => pickFile(e.dataTransfer.files[0]));
-
-$('#clear').addEventListener('click', clearFile);
-$('#analyze').addEventListener('click', run);
+$('#start').addEventListener('click', startLive);
+$('#rec-stop').addEventListener('click', stopLive);
+$('#rec-cancel').addEventListener('click', cancelLive);
 $('#again').addEventListener('click', () => {
   $('#player').pause();
-  clearFile();
-  show('upload');
+  show('start');
 });
