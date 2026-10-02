@@ -65,6 +65,7 @@ const live = {
   prevGazeAway: null,
   prevMovementActive: false,
   prevSqueezeActive: false,
+  noDetectionStreak: 0,
 };
 
 /* ---------- helpers ---------- */
@@ -113,7 +114,10 @@ function loadModels() {
       baseOptions: {
         modelAssetPath:
           'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-        delegate: 'GPU',
+        // CPU, not GPU: two concurrent GPU-delegate model instances sharing one WebGL
+        // context is a known source of silent failures in the browser. We only sample
+        // ~7x/sec, not real-time video, so CPU inference easily keeps up.
+        delegate: 'CPU',
       },
       outputFaceBlendshapes: true,
       runningMode: 'VIDEO',
@@ -124,7 +128,7 @@ function loadModels() {
       baseOptions: {
         modelAssetPath:
           'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-        delegate: 'GPU',
+        delegate: 'CPU',
       },
       runningMode: 'VIDEO',
       numHands: 1,
@@ -152,6 +156,9 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+let loggedFaceError = false;
+let loggedHandError = false;
+
 // Pulls one sample from the live preview video at this instant. Runs on an interval while
 // the live session is active - `performance.now()` is strictly increasing, which is what
 // detectForVideo requires.
@@ -177,7 +184,11 @@ function sampleLiveFrame(video, startedAt) {
       );
       gazeAway = away > CFG.gazeAwayThreshold;
     }
-  } catch { /* face model hiccup on this frame - leave as "no face" */ }
+  } catch (err) {
+    // A genuinely bad frame here and there is normal - but if this is firing on every
+    // single frame, that's not a "hiccup," it's a real problem, so log it once.
+    if (!loggedFaceError) { console.error('[video] face detection is failing:', err); loggedFaceError = true; }
+  }
 
   let wristX = null, wristY = null, openness = null, handLm = null;
   try {
@@ -190,7 +201,9 @@ function sampleLiveFrame(video, startedAt) {
       const scale = dist(lm[0], lm[9]) || 0.0001; // wrist-to-middle-knuckle: a stable per-hand size reference
       openness = FINGERTIPS.reduce((sum, i) => sum + dist(lm[0], lm[i]), 0) / FINGERTIPS.length / scale;
     }
-  } catch { /* hand model hiccup on this frame */ }
+  } catch (err) {
+    if (!loggedHandError) { console.error('[video] hand detection is failing:', err); loggedHandError = true; }
+  }
 
   return { t, gazeAway, faceLm, wristX, wristY, openness, handLm };
 }
@@ -301,8 +314,15 @@ function drawLiveOverlay(video, canvas, sample, movementActive, squeezeActive) {
 }
 
 function updateLiveCounters() {
-  $('#v-live-counts').textContent =
-    `Gaze deviations: ${live.gazeAwayCount}   Movement: ${live.movementCount}   Squeeze: ${live.squeezeCount}`;
+  const base = `Gaze deviations: ${live.gazeAwayCount}   Movement: ${live.movementCount}   Squeeze: ${live.squeezeCount}`;
+  // ~3s of nothing detected at all (no face, no hand) almost certainly means detection isn't
+  // running, not that the person briefly looked away - say so instead of staying silent.
+  const el = $('#v-live-counts');
+  if (live.noDetectionStreak > 20) {
+    el.textContent = `${base}  —  Not detecting a face or hand. Check lighting/distance, or open the browser console for an error.`;
+  } else {
+    el.textContent = base;
+  }
 }
 
 /* ---------- metrics ---------- */
@@ -593,10 +613,13 @@ function resetLive() {
     recorder: null, chunks: [], samples: [], startedAt: 0, timer: null, sampleLoopId: null, hitCap: false, cancelled: false,
     gazeAwayCount: 0, movementCount: 0, squeezeCount: 0,
     prevGazeAway: null, prevMovementActive: false, prevSqueezeActive: false,
+    noDetectionStreak: 0,
   });
   lastHandLm = null;
   lastHandAt = 0;
   lastFaceLm = null;
+  loggedFaceError = false;
+  loggedHandError = false;
   lastFaceAt = 0;
   const overlay = $('#v-overlay');
   overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
@@ -663,6 +686,8 @@ async function startLive() {
   const loop = () => {
     const sample = sampleLiveFrame(preview, live.startedAt);
     live.samples.push(sample);
+
+    live.noDetectionStreak = (!sample.faceLm && !sample.handLm) ? live.noDetectionStreak + 1 : 0;
 
     const movementActive = isActiveNow(live.samples, ['wristX', 'wristY'], CFG.movementWindowSec, CFG.movementReversalsPerSec);
     const squeezeActive = isActiveNow(live.samples, ['openness'], CFG.squeezeWindowSec, CFG.squeezeReversalsPerSec);
