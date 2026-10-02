@@ -31,6 +31,10 @@ const HAND_CONNECTIONS = [
 ];
 const FINGERTIPS = [4, 8, 12, 16, 20];
 
+// Standard MediaPipe Face Mesh eye-contour point rings (468-point topology).
+const LEFT_EYE_RING = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+const RIGHT_EYE_RING = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
+
 const $ = (sel) => document.querySelector(sel);
 const views = {
   start: $('#v-view-start'),
@@ -124,6 +128,11 @@ function loadModels() {
       },
       runningMode: 'VIDEO',
       numHands: 1,
+      // Lowered from the defaults (~0.5) - fast repetitive motion blurs the hand, which is
+      // exactly the moment we most need it to keep tracking rather than drop detection.
+      minHandDetectionConfidence: 0.3,
+      minHandPresenceConfidence: 0.3,
+      minTrackingConfidence: 0.3,
     });
   })();
 
@@ -150,10 +159,11 @@ function sampleLiveFrame(video, startedAt) {
   const t = (performance.now() - startedAt) / 1000;
   const tsMs = Math.round(performance.now());
 
-  let gazeAway = null;
+  let gazeAway = null, faceLm = null;
   try {
     const faceResult = faceLandmarker.detectForVideo(video, tsMs);
     const categories = faceResult?.faceBlendshapes?.[0]?.categories;
+    faceLm = faceResult?.faceLandmarks?.[0] || null;
     if (categories) {
       const away = Math.max(
         blendshapeScore(categories, 'eyeLookInLeft'),
@@ -182,12 +192,43 @@ function sampleLiveFrame(video, startedAt) {
     }
   } catch { /* hand model hiccup on this frame */ }
 
-  return { t, gazeAway, wristX, wristY, openness, handLm };
+  return { t, gazeAway, faceLm, wristX, wristY, openness, handLm };
 }
 
-// Draws the live detection feedback: the full hand skeleton (green, like a landmark-tracking
-// overlay), the wrist point enlarging/reddening when arm-level movement is active, the whole
-// hand flashing red when a squeezing (open/close) rhythm is active, and the gaze badge.
+// A frame or two of missed detection during fast motion (blur) shouldn't make the overlay
+// vanish right when it matters most - hold the last known landmarks briefly, fading out if
+// tracking doesn't come back.
+let lastHandLm = null, lastHandAt = 0;
+let lastFaceLm = null, lastFaceAt = 0;
+const GRACE_MS = 500;
+
+function drawRing(ctx, lm, ring, px, color, alpha) {
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ring.forEach((idx, i) => {
+    const [x, y] = px(lm[idx]);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.stroke();
+  ring.forEach((idx) => {
+    const [x, y] = px(lm[idx]);
+    ctx.beginPath();
+    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 5;
+    ctx.fill();
+  });
+}
+
+// Draws the live detection feedback: a vector ring around each eye (green when gaze is on
+// camera, amber when away, like a landmark-tracking overlay), the hand skeleton (green,
+// flashing red on a squeezing rhythm, wrist enlarging on arm-level movement), and the gaze
+// badge text.
 function drawLiveOverlay(video, canvas, sample, movementActive, squeezeActive) {
   if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
     canvas.width = video.videoWidth || 640;
@@ -195,12 +236,32 @@ function drawLiveOverlay(video, canvas, sample, movementActive, squeezeActive) {
   }
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const now = performance.now();
 
-  if (sample.handLm) {
-    const lm = sample.handLm;
+  if (sample.faceLm) { lastFaceLm = sample.faceLm; lastFaceAt = now; }
+  const faceAge = now - lastFaceAt;
+  const faceLm = faceAge < GRACE_MS ? lastFaceLm : null;
+
+  if (faceLm) {
+    const stale = !sample.faceLm;
+    const alpha = stale ? Math.max(0.25, 1 - faceAge / GRACE_MS) : 1;
+    const px = (p) => [p.x * canvas.width, p.y * canvas.height];
+    const eyeColor = sample.gazeAway === true ? '#fbbf24' : '#4ade80';
+    drawRing(ctx, faceLm, LEFT_EYE_RING, px, eyeColor, alpha);
+    drawRing(ctx, faceLm, RIGHT_EYE_RING, px, eyeColor, alpha);
+    ctx.globalAlpha = 1;
+  }
+
+  if (sample.handLm) { lastHandLm = sample.handLm; lastHandAt = now; }
+  const age = now - lastHandAt;
+  const lm = age < GRACE_MS ? lastHandLm : null;
+
+  if (lm) {
+    const stale = !sample.handLm; // showing the held-over position, not this frame's own detection
     const px = (p) => [p.x * canvas.width, p.y * canvas.height];
     const lineColor = squeezeActive ? '#f87171' : '#4ade80';
 
+    ctx.globalAlpha = stale ? Math.max(0.25, 1 - age / GRACE_MS) : 1;
     ctx.strokeStyle = lineColor;
     ctx.lineWidth = 2;
     HAND_CONNECTIONS.forEach(([a, b]) => {
@@ -223,6 +284,7 @@ function drawLiveOverlay(video, canvas, sample, movementActive, squeezeActive) {
       ctx.shadowBlur = highlightWrist ? 14 : 4;
       ctx.fill();
     });
+    ctx.globalAlpha = 1;
   }
 
   const badge = $('#v-gaze-badge');
@@ -532,6 +594,10 @@ function resetLive() {
     gazeAwayCount: 0, movementCount: 0, squeezeCount: 0,
     prevGazeAway: null, prevMovementActive: false, prevSqueezeActive: false,
   });
+  lastHandLm = null;
+  lastHandAt = 0;
+  lastFaceLm = null;
+  lastFaceAt = 0;
   const overlay = $('#v-overlay');
   overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
   const badge = $('#v-gaze-badge');
