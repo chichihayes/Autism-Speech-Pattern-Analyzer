@@ -70,34 +70,50 @@ function setStep(name) {
 
 /* ---------- on-device models ---------- */
 
-async function loadModels() {
-  if (faceLandmarker && poseLandmarker) return;
+let modelsPromise = null;
 
-  const vision = await FilesetResolver.forVisionTasks(
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
-  );
+// Downloads the WASM runtime + two models (a few MB total). Kicked off eagerly as soon as
+// this script runs - see the bottom of the file - so by the time someone actually clicks
+// "Start live check" it's usually already loaded or close to it, instead of making them
+// wait for the download after they've committed to starting. Cached by the browser after
+// the first visit, so this is only slow the very first time.
+function loadModels() {
+  if (modelsPromise) return modelsPromise;
 
-  faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath:
-        'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-      delegate: 'GPU',
-    },
-    outputFaceBlendshapes: true,
-    runningMode: 'VIDEO',
-    numFaces: 1,
-  });
+  modelsPromise = (async () => {
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
+    );
 
-  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath:
-        'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-      delegate: 'GPU',
-    },
-    runningMode: 'VIDEO',
-    numPoses: 1,
-  });
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath:
+          'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+        delegate: 'GPU',
+      },
+      outputFaceBlendshapes: true,
+      runningMode: 'VIDEO',
+      numFaces: 1,
+    });
+
+    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath:
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+        delegate: 'GPU',
+      },
+      runningMode: 'VIDEO',
+      numPoses: 1,
+    });
+  })();
+
+  modelsPromise.catch(() => { modelsPromise = null; }); // let a future call retry after a failure
+
+  return modelsPromise;
 }
+
+// Start the download in the background right away, regardless of which tab is active.
+loadModels();
 
 function blendshapeScore(categories, name) {
   return categories?.find((c) => c.categoryName === name)?.score || 0;
