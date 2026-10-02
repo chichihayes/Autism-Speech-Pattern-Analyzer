@@ -26,28 +26,18 @@ export default async function handler(req, res) {
   const r = (req.body || {}).report || {};
   const gazePct = r.gazeOnCameraPct === null || r.gazeOnCameraPct === undefined ? null : num(r.gazeOnCameraPct);
 
-  const prompt = `You are a behavioral-video pattern analyst. Analyze the following measurements from a short video and provide insights:
+  const prompt = `Report on exactly two things from a short video clip: gaze and repetitive movement. Nothing else - no literature review, no extra topics.
 
 MEASUREMENTS:
-- Video analyzed: ${num(r.durationSec)} seconds
-- A face was detected in: ${num(r.facePct)}% of sampled frames
 - Gaze toward the camera: ${gazePct === null ? 'not reliably measurable (face not consistently detected)' : `${gazePct}% of the time`}
-- Longest unbroken stretch of gaze toward the camera: ${num(r.longestGazeStreakSec).toFixed(1)} seconds
+- Longest unbroken gaze streak: ${num(r.longestGazeStreakSec).toFixed(1)}s
 - Distinct gaze-away glances: ${num(r.gazeAwayEpisodeCount)}
-- Repetitive hand/arm movement episodes (e.g. flapping, rocking motion): ${num(r.stimEpisodeCount)}
-- Total time spent in repetitive movement: ${num(r.totalStimSec).toFixed(1)} seconds
-- Average length of a repetitive-movement episode: ${num(r.avgStimEpisodeSec).toFixed(1)} seconds
+- Repetitive hand/arm movement episodes (flapping/rocking-type motion): ${num(r.stimEpisodeCount)}
+- Total time in repetitive movement: ${num(r.totalStimSec).toFixed(1)}s
+- Average episode length: ${num(r.avgStimEpisodeSec).toFixed(1)}s
+- Clip length: ${num(r.durationSec)}s
 
-These numbers come from lightweight on-device computer vision (face gaze-direction blendshapes and body-pose wrist tracking), not a clinical instrument.
-
-Please provide:
-1. What these numbers indicate about attention and movement during the clip
-2. How gaze and repetitive-movement patterns like these are generally discussed in the research literature
-3. Notable observations - anything that stands out as unusually high, low, or typical
-4. Clear caveats about what a single short clip can and can't tell you
-
-Be analytical and educational, not diagnostic. Never suggest a diagnosis or clinical conclusion - this is a single short sample of behavior, not an assessment.
-Format the answer in Markdown with short headings and bullet points.`;
+Write a short, direct report - 3 to 5 plain sentences, no headings, no bullet points, no markdown formatting, no introduction, no "in summary." One sentence on what the gaze numbers show, one or two on what the repetitive-movement numbers show, and one closing line that this is a single short clip, not a diagnosis. Nothing else.`;
 
   const models = [process.env.OPENROUTER_MODEL, ...FALLBACK_MODELS].filter(Boolean);
 
